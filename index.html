@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Cyclo">
+<meta name="theme-color" content="#16191c">
+<title>Cyclo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;700&family=Barlow:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#16191c;--panel:#1f2327;--line:#323840;--ink:#f4f1e8;--mute:#9aa3ab;--paint:#ffb400;--stop:#ff5a4d;--ok:#55d07a}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif}
+body{padding:env(safe-area-inset-top) 14px calc(env(safe-area-inset-bottom) + 14px);max-width:560px;margin:0 auto;min-height:100%}
+.num{font-family:"Barlow Condensed","Arial Narrow",sans-serif;font-weight:700;font-variant-numeric:tabular-nums;line-height:.9}
+.top{display:flex;justify-content:space-between;align-items:center;padding:12px 2px;color:var(--mute);font-size:14px}
+.gps{display:flex;align-items:center;gap:8px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--mute)}
+.dot.good{background:var(--ok)}.dot.ok{background:var(--paint)}.dot.bad{background:var(--stop)}
+.speed{text-align:center;padding:6px 0 14px;border-bottom:3px dashed var(--paint)}
+.speed .num{font-size:min(38vw,190px);color:var(--ink)}
+.speed small{font-size:18px;color:var(--mute);display:block;margin-top:6px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);margin:14px 0;border:1px solid var(--line)}
+.cell{background:var(--bg);padding:12px 14px}
+.cell .num{font-size:52px}
+.cell span{display:block;color:var(--mute);font-size:14px;margin-top:4px}
+canvas{width:100%;height:170px;background:var(--panel);display:block;border:1px solid var(--line)}
+.btns{display:grid;grid-template-columns:1fr;gap:10px;margin:14px 0}
+.btns.two{grid-template-columns:2fr 1fr}
+button{font:600 20px Barlow,sans-serif;padding:20px;border:0;border-radius:6px;background:var(--paint);color:#1b1500;cursor:pointer}
+button.sec{background:var(--panel);color:var(--ink);border:1px solid var(--line)}
+button.stop{background:var(--stop);color:#fff}
+button:focus-visible,summary:focus-visible{outline:3px solid #fff;outline-offset:2px}
+.hide{display:none!important}
+details{border-top:1px solid var(--line);padding-top:10px}
+summary{cursor:pointer;font-weight:600;padding:8px 0}
+.ride{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);font-size:15px}
+.ride b{display:block}.ride em{font-style:normal;color:var(--mute);font-size:13px}
+.ride button{font-size:14px;padding:10px 14px}
+.msg{color:var(--mute);font-size:14px;padding:6px 2px}
+@media (prefers-reduced-motion:no-preference){button:active{transform:scale(.98)}}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="gps"><span class="dot" id="dot"></span><span id="gpsTxt">GPS belum aktif</span></div>
+  <span id="wl">Layar: biasa</span>
+</div>
+
+<div class="speed">
+  <div class="num" id="spd">0.0</div>
+  <small>km/jam</small>
+</div>
+
+<div class="grid">
+  <div class="cell"><div class="num" id="dist">0.00</div><span>Jarak (km)</span></div>
+  <div class="cell"><div class="num" id="mov">0:00</div><span>Waktu gerak</span></div>
+  <div class="cell"><div class="num" id="avg">0.0</div><span>Rata-rata (km/jam)</span></div>
+  <div class="cell"><div class="num" id="max">0.0</div><span>Kecepatan maks</span></div>
+  <div class="cell"><div class="num" id="ela">0:00</div><span>Total waktu</span></div>
+  <div class="cell"><div class="num" id="gain">0</div><span>Tanjakan (m)</span></div>
+</div>
+
+<canvas id="map" width="560" height="340" aria-label="Rute"></canvas>
+
+<div class="btns" id="b0"><button id="start">Mulai</button></div>
+<div class="btns two hide" id="b1"><button id="pause" class="sec">Jeda</button><button id="finish" class="stop">Selesai</button></div>
+<div class="msg" id="msg">Taruh iPhone di holder stang, biarkan layar nyala dan app tetap di depan.</div>
+
+<details id="hist"><summary>Riwayat ride</summary><div id="list"></div></details>
+
+<script>
+(function(){
+  var $=function(i){return document.getElementById(i)};
+  var S=null, watchId=null, tickId=null, wake=null, cur=0, lastFix=0, lastTick=0;
+
+  function fresh(){return {paused:false,pts:[],dist:0,moving:0,elapsed:0,max:0,gain:0,ref:null,startedAt:Date.now()}}
+  function hav(a,b){var R=6371000,r=Math.PI/180,dl=(b.lat-a.lat)*r,dn=(b.lon-a.lon)*r;
+    var x=Math.sin(dl/2)*Math.sin(dl/2)+Math.cos(a.lat*r)*Math.cos(b.lat*r)*Math.sin(dn/2)*Math.sin(dn/2);
+    return 2*R*Math.asin(Math.sqrt(x))}
+  function fmt(ms){var s=Math.floor(ms/1000),h=Math.floor(s/3600),m=Math.floor(s%3600/60),c=s%60;
+    return h>0?h+":"+String(m).padStart(2,"0")+":"+String(c).padStart(2,"0"):m+":"+String(c).padStart(2,"0")}
+
+  function render(){
+    var d=S?S.dist/1000:0, mv=S?S.moving:0, avg=mv>0?(S.dist/1000)/(mv/3600000):0;
+    $("spd").textContent=cur.toFixed(1);
+    $("dist").textContent=d.toFixed(2);
+    $("mov").textContent=fmt(mv);
+    $("avg").textContent=avg.toFixed(1);
+    $("max").textContent=(S?S.max:0).toFixed(1);
+    $("ela").textContent=fmt(S?S.elapsed:0);
+    $("gain").textContent=Math.round(S?S.gain:0);
+    draw();
+  }
+
+  function draw(){
+    var c=$("map"),x=c.getContext("2d"),W=c.width,H=c.height;
+    x.clearRect(0,0,W,H);
+    if(!S||S.pts.length<2){x.fillStyle="#9aa3ab";x.font="22px Barlow,sans-serif";x.textAlign="center";
+      x.fillText("Rute muncul di sini setelah mulai gerak",W/2,H/2);return}
+    var p=S.pts,la=p.map(function(q){return q.lat}),lo=p.map(function(q){return q.lon});
+    var minA=Math.min.apply(null,la),maxA=Math.max.apply(null,la),minO=Math.min.apply(null,lo),maxO=Math.max.apply(null,lo);
+    var k=Math.cos((minA+maxA)/2*Math.PI/180), w=(maxO-minO)*k||1e-6, h=(maxA-minA)||1e-6, pad=24;
+    var sc=Math.min((W-2*pad)/w,(H-2*pad)/h), ox=(W-w*sc)/2, oy=(H-h*sc)/2;
+    function X(q){return ox+(q.lon-minO)*k*sc}
+    function Y(q){return H-oy-(q.lat-minA)*sc}
+    x.lineWidth=5;x.lineJoin="round";x.lineCap="round";x.strokeStyle="#ffb400";x.beginPath();
+    p.forEach(function(q,i){i?x.lineTo(X(q),Y(q)):x.moveTo(X(q),Y(q))});x.stroke();
+    var e=p[p.length-1];x.fillStyle="#f4f1e8";x.beginPath();x.arc(X(e),Y(e),9,0,7);x.fill();
+    x.strokeStyle="#16191c";x.lineWidth=3;x.stroke();
+  }
+
+  function setGps(acc){
+    var d=$("dot"),t=$("gpsTxt");
+    if(acc==null){d.className="dot";t.textContent="GPS belum aktif";return}
+    d.className="dot "+(acc<=10?"good":acc<=30?"ok":"bad");
+    t.textContent="GPS ±"+Math.round(acc)+" m";
+  }
+
+  function onPos(pos){
+    var c=pos.coords;lastFix=Date.now();setGps(c.accuracy);
+    if(!S||S.paused||c.accuracy>30)return;
+    var pt={lat:c.latitude,lon:c.longitude,ele:c.altitude,t:pos.timestamp};
+    var prev=S.pts[S.pts.length-1], v=null;
+    if(c.speed!=null&&c.speed>=0)v=c.speed*3.6;
+    if(prev){
+      var d=hav(prev,pt), dt=(pt.t-prev.t)/1000;
+      if(v==null&&dt>0)v=d/dt*3.6;
+      if(d<3&&(v||0)<2){cur=0;render();return}
+      if(dt>0&&d/dt>25)return; // loncatan GPS >90 km/jam, dibuang
+      S.dist+=d;
+    }
+    cur=v||0; if(cur>S.max)S.max=cur;
+    if(c.altitude!=null&&c.altitudeAccuracy!=null&&c.altitudeAccuracy<=15){
+      if(S.ref==null)S.ref=c.altitude;
+      else if(c.altitude-S.ref>3){S.gain+=c.altitude-S.ref;S.ref=c.altitude}
+      else if(S.ref-c.altitude>3){S.ref=c.altitude}
+    }
+    S.pts.push(pt);render();
+  }
+  function onErr(e){
+    setGps(null);
+    $("msg").textContent=e.code===1?"Izin lokasi ditolak. Buka Settings > Safari > Lokasi, pilih Izinkan.":"GPS belum dapat sinyal. Coba pindah ke tempat terbuka.";
+  }
+
+  function tick(){
+    var n=Date.now(),dt=n-lastTick;lastTick=n;
+    if(!S||S.paused)return;
+    S.elapsed+=dt;
+    if(n-lastFix>5000)cur=0;
+    if(cur>1.5)S.moving+=dt;
+    render();
+  }
+
+  async function lock(){
+    try{if("wakeLock" in navigator){wake=await navigator.wakeLock.request("screen");$("wl").textContent="Layar: tetap nyala";
+      wake.addEventListener("release",function(){$("wl").textContent="Layar: biasa"})}
+      else $("wl").textContent="Layar: tidak didukung"}catch(e){$("wl").textContent="Layar: biasa"}
+  }
+  document.addEventListener("visibilitychange",function(){if(document.visibilityState==="visible"&&S)lock()});
+
+  function show(running){$("b0").classList.toggle("hide",running);$("b1").classList.toggle("hide",!running)}
+
+  $("start").onclick=function(){
+    if(!navigator.geolocation){$("msg").textContent="Browser ini tidak mendukung GPS.";return}
+    S=fresh();cur=0;lastFix=Date.now();lastTick=Date.now();
+    watchId=navigator.geolocation.watchPosition(onPos,onErr,{enableHighAccuracy:true,maximumAge:0,timeout:20000});
+    tickId=setInterval(tick,500);lock();show(true);
+    $("pause").textContent="Jeda";$("msg").textContent="Merekam. Jangan pindah ke app lain.";render();
+  };
+  $("pause").onclick=function(){
+    S.paused=!S.paused;lastTick=Date.now();
+    $("pause").textContent=S.paused?"Lanjut":"Jeda";
+    $("msg").textContent=S.paused?"Dijeda.":"Merekam.";if(S.paused)cur=0;render();
+  };
+  $("finish").onclick=function(){
+    if(!confirm("Selesaikan dan simpan ride ini?"))return;
+    navigator.geolocation.clearWatch(watchId);clearInterval(tickId);
+    if(wake){try{wake.release()}catch(e){}}
+    var r=S;S=null;cur=0;show(false);setGps(null);
+    if(r.dist>50){save(r);$("msg").textContent="Ride tersimpan. Cek di Riwayat.";$("hist").open=true}
+    else $("msg").textContent="Ride terlalu pendek, tidak disimpan.";
+    render();list();
+  };
+
+  function load(){try{return JSON.parse(localStorage.getItem("rides")||"[]")}catch(e){return[]}}
+  function save(r){
+    var a=load();a.unshift({id:r.startedAt,dist:r.dist,moving:r.moving,elapsed:r.elapsed,max:r.max,gain:r.gain,pts:r.pts});
+    try{localStorage.setItem("rides",JSON.stringify(a))}
+    catch(e){try{localStorage.setItem("rides",JSON.stringify(a.slice(0,10)))}catch(e2){$("msg").textContent="Penyimpanan penuh. Ride tidak tersimpan."}}
+  }
+  function gpx(r){
+    var s='<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Cyclo" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>Ride '+new Date(r.id).toISOString()+'</name><type>cycling</type><trkseg>\n';
+    r.pts.forEach(function(p){s+='<trkpt lat="'+p.lat+'" lon="'+p.lon+'">'+(p.ele!=null?'<ele>'+p.ele.toFixed(1)+'</ele>':'')+'<time>'+new Date(p.t).toISOString()+'</time></trkpt>\n'});
+    return s+'</trkseg></trk></gpx>';
+  }
+  function exp(r){
+    var f=new File([gpx(r)],"ride-"+new Date(r.id).toISOString().slice(0,10)+".gpx",{type:"application/gpx+xml"});
+    if(navigator.canShare&&navigator.canShare({files:[f]})){navigator.share({files:[f]}).catch(function(){})}
+    else{var u=URL.createObjectURL(f),a=document.createElement("a");a.href=u;a.download=f.name;document.body.appendChild(a);a.click();a.remove();setTimeout(function(){URL.revokeObjectURL(u)},4000)}
+  }
+  function list(){
+    var a=load(),el=$("list");el.innerHTML="";
+    if(!a.length){el.innerHTML='<div class="msg">Belum ada ride. Mulai ride pertama lo.</div>';return}
+    a.forEach(function(r){
+      var avg=r.moving>0?(r.dist/1000)/(r.moving/3600000):0,d=document.createElement("div");d.className="ride";
+      d.innerHTML='<div><b>'+(r.dist/1000).toFixed(2)+' km · '+fmt(r.moving)+'</b><em>'+new Date(r.id).toLocaleDateString("id-ID",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})+' · rata-rata '+avg.toFixed(1)+' · maks '+r.max.toFixed(1)+' · +'+Math.round(r.gain)+' m</em></div>';
+      var b=document.createElement("button");b.className="sec";b.textContent="Ekspor GPX";b.onclick=function(){exp(r)};
+      var x=document.createElement("button");x.className="sec";x.textContent="Hapus";x.onclick=function(){
+        if(confirm("Hapus ride ini?")){try{localStorage.setItem("rides",JSON.stringify(load().filter(function(q){return q.id!==r.id})))}catch(e){}list()}};
+      var w=document.createElement("div");w.style.cssText="display:flex;gap:6px";w.appendChild(b);w.appendChild(x);d.appendChild(w);el.appendChild(d);
+    });
+  }
+  render();list();
+})();
+</script>
+</body>
+</html>
